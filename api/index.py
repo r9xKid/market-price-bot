@@ -4,6 +4,7 @@ import os
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 
 # =========================================================
@@ -410,7 +411,7 @@ def do_market_update():
         f"{abs(changes['brent']):.2f}%\n"
         "\n"
 
-        f"⏱ {datetime.now().strftime('%H:%M')}"
+        f"⏱ {datetime.now(ZoneInfo('Asia/Tehran')).strftime('%H:%M')}"
     )
 
     # -----------------------------------------
