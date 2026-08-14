@@ -1,27 +1,14 @@
 from http.server import BaseHTTPRequestHandler
 import json
 import os
-import re
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
 
-# =========================
-# Yahoo Finance symbols
-# =========================
-
-SYMBOLS = {
-    "gold_oz": "GC=F",
-    "silver_oz": "SI=F",
-    "wti": "CL=F",
-    "brent": "BZ=F",
-}
-
-
-# =========================
+# ==========================================
 # Yahoo Finance
-# =========================
+# ==========================================
 
 def get_yahoo_price(symbol):
     url = (
@@ -32,172 +19,203 @@ def get_yahoo_price(symbol):
 
     request = urllib.request.Request(
         url,
-        headers={
-            "User-Agent": "Mozilla/5.0"
-        },
+        headers={"User-Agent": "Mozilla/5.0"}
     )
 
     with urllib.request.urlopen(request, timeout=10) as response:
         data = json.loads(response.read().decode("utf-8"))
 
     result = data["chart"]["result"][0]
-
     price = result["meta"].get("regularMarketPrice")
 
     if price is None:
-        raise Exception(f"No price returned for {symbol}")
+        raise Exception(f"No price for {symbol}")
 
     return float(price)
 
 
-# =========================
-# TGJU USD
-# =========================
+# ==========================================
+# TGJU Live Data
+# ==========================================
 
-def get_usd_toman():
+def get_tgju_data():
 
-    # TGJU live JSON endpoint
-    urls = [
-        "https://call1.tgju.org/ajax.json",
-        "https://call2.tgju.org/ajax.json",
-        "https://call3.tgju.org/ajax.json",
-        "https://call4.tgju.org/ajax.json",
-        "https://call5.tgju.org/ajax.json",
-    ]
+    url = "https://call5.tgju.org/ajax.json"
 
-    for url in urls:
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "application/json",
+            "Referer": "https://www.tgju.org/"
+        }
+    )
 
-        try:
+    with urllib.request.urlopen(
+        request,
+        timeout=10
+    ) as response:
 
-            request = urllib.request.Request(
-                url,
-                headers={
-                    "User-Agent": "Mozilla/5.0",
-                    "Accept": "application/json,text/plain,*/*",
-                    "Referer": "https://www.tgju.org/",
-                },
-            )
+        raw = response.read().decode(
+            "utf-8",
+            errors="ignore"
+        )
 
-            with urllib.request.urlopen(
-                request,
-                timeout=10
-            ) as response:
+    return json.loads(raw)
 
-                raw = response.read().decode(
-                    "utf-8",
-                    errors="ignore"
-                )
 
-            data = json.loads(raw)
+def find_value(obj, wanted_keys):
 
-            # حالت‌های مختلف ساختار TGJU
-            candidates = []
+    if isinstance(obj, dict):
 
-            if isinstance(data, dict):
+        for key in wanted_keys:
 
-                # حالت:
-                # current -> price_dollar_rl
-                current = data.get("current")
+            if key in obj:
+                value = obj[key]
 
-                if isinstance(current, dict):
-                    candidates.append(
-                        current.get("price_dollar_rl")
-                    )
+                if isinstance(value, dict):
 
-                # حالت مستقیم
-                candidates.append(
-                    data.get("price_dollar_rl")
-                )
-
-                # جستجوی recursive
-                def find_key(obj, key):
-
-                    if isinstance(obj, dict):
-
-                        if key in obj:
-                            return obj[key]
-
-                        for value in obj.values():
-                            result = find_key(value, key)
-
-                            if result is not None:
-                                return result
-
-                    elif isinstance(obj, list):
-
-                        for item in obj:
-                            result = find_key(item, key)
-
-                            if result is not None:
-                                return result
-
-                    return None
-
-                candidates.append(
-                    find_key(data, "price_dollar_rl")
-                )
-
-            for candidate in candidates:
-
-                if candidate is None:
-                    continue
-
-                # اگر خودش دیکشنری باشد
-                if isinstance(candidate, dict):
-
-                    for key in [
+                    for subkey in [
                         "p",
                         "price",
                         "last",
                         "value",
+                        "close"
                     ]:
 
-                        if key in candidate:
+                        if subkey in value:
+                            return value[subkey]
 
-                            value = candidate[key]
+                return value
 
-                            value = str(value)
-                            value = value.replace(",", "")
-                            value = value.replace(" ", "")
+        for value in obj.values():
 
-                            if value.isdigit():
+            result = find_value(
+                value,
+                wanted_keys
+            )
 
-                                rial = float(value)
+            if result is not None:
+                return result
 
-                                if rial > 100000:
-                                    return rial / 10
+    elif isinstance(obj, list):
 
-                # اگر مستقیم عدد/رشته باشد
-                else:
+        for item in obj:
 
-                    value = str(candidate)
+            result = find_value(
+                item,
+                wanted_keys
+            )
 
-                    value = value.replace(",", "")
-                    value = value.replace(" ", "")
+            if result is not None:
+                return result
 
-                    match = re.search(
-                        r"\d+(?:\.\d+)?",
-                        value
-                    )
+    return None
 
-                    if match:
 
-                        rial = float(match.group())
+def number(value):
 
-                        if rial > 100000:
-                            return rial / 10
+    if value is None:
+        return None
 
-        except Exception:
-            continue
+    if isinstance(value, (int, float)):
+        return float(value)
 
-    raise Exception(
-        "Unable to get USD/IRR from TGJU"
+    text = str(value)
+
+    text = (
+        text
+        .replace(",", "")
+        .replace("٬", "")
+        .replace(" ", "")
     )
 
+    return float(text)
 
-# =========================
+
+def get_tgju_prices():
+
+    data = get_tgju_data()
+
+    # دلار آزاد
+    usd = find_value(
+        data,
+        [
+            "price_dollar_rl",
+            "dollar_rl",
+            "usd_irr"
+        ]
+    )
+
+    # طلای 18 عیار
+    gold18 = find_value(
+        data,
+        [
+            "tgju_gold_irg18",
+            "gold_18k",
+            "gold_18"
+        ]
+    )
+
+    # طلای 24 عیار
+    gold24 = find_value(
+        data,
+        [
+            "tgju_gold_irg24",
+            "gold_24k",
+            "gold_24"
+        ]
+    )
+
+    # نقره
+    silver = find_value(
+        data,
+        [
+            "tgju_silver_irg",
+            "silver_999",
+            "silver"
+        ]
+    )
+
+    if usd is None:
+        raise Exception(
+            "TGJU USD price not found"
+        )
+
+    if gold18 is None:
+        raise Exception(
+            "TGJU 18K gold price not found"
+        )
+
+    if gold24 is None:
+        raise Exception(
+            "TGJU 24K gold price not found"
+        )
+
+    if silver is None:
+        raise Exception(
+            "TGJU silver price not found"
+        )
+
+    # TGJU قیمت‌ها را به ریال می‌دهد
+    # ما در کانال تومان می‌خواهیم
+
+    usd_toman = number(usd) / 10
+    gold18_toman = number(gold18) / 10
+    gold24_toman = number(gold24) / 10
+    silver_toman = number(silver) / 10
+
+    return {
+        "usd_toman": usd_toman,
+        "gold_18g": gold18_toman,
+        "gold_24g": gold24_toman,
+        "silver_g": silver_toman
+    }
+
+
+# ==========================================
 # Supabase
-# =========================
+# ==========================================
 
 def supabase_request(
     method,
@@ -216,7 +234,6 @@ def supabase_request(
     body = None
 
     if data is not None:
-
         body = json.dumps(
             data
         ).encode("utf-8")
@@ -229,8 +246,8 @@ def supabase_request(
             "apikey": key,
             "Authorization": f"Bearer {key}",
             "Content-Type": "application/json",
-            "Prefer": "return=representation",
-        },
+            "Prefer": "return=representation"
+        }
     )
 
     with urllib.request.urlopen(
@@ -238,25 +255,29 @@ def supabase_request(
         timeout=10
     ) as response:
 
-        raw = response.read().decode(
-            "utf-8"
+        raw = response.read().decode()
+
+        return (
+            json.loads(raw)
+            if raw
+            else []
         )
-
-        if not raw:
-            return []
-
-        return json.loads(raw)
 
 
 def get_previous(asset):
 
+    asset_encoded = urllib.parse.quote(
+        asset,
+        safe=""
+    )
+
     rows = supabase_request(
         "GET",
-        "prices?"
-        f"asset=eq.{urllib.parse.quote(asset)}"
-        "&select=price"
-        "&order=updated_at.desc"
-        "&limit=1"
+        f"prices?"
+        f"asset=eq.{asset_encoded}"
+        f"&select=price"
+        f"&order=updated_at.desc"
+        f"&limit=1"
     )
 
     if not rows:
@@ -280,14 +301,14 @@ def save_price(
             "price": price,
             "updated_at": datetime.now(
                 timezone.utc
-            ).isoformat(),
-        },
+            ).isoformat()
+        }
     )
 
 
-# =========================
+# ==========================================
 # Telegram
-# =========================
+# ==========================================
 
 def send_telegram(message):
 
@@ -307,14 +328,14 @@ def send_telegram(message):
     data = urllib.parse.urlencode(
         {
             "chat_id": chat_id,
-            "text": message,
+            "text": message
         }
-    ).encode("utf-8")
+    ).encode()
 
     request = urllib.request.Request(
         url,
         data=data,
-        method="POST",
+        method="POST"
     )
 
     with urllib.request.urlopen(
@@ -323,26 +344,41 @@ def send_telegram(message):
     ) as response:
 
         return json.loads(
-            response.read().decode(
-                "utf-8"
-            )
+            response.read().decode()
         )
 
 
-# =========================
-# Main market update
-# =========================
+# ==========================================
+# Main
+# ==========================================
 
 def do_market_update():
 
-    # جهانی
-    gold_oz = get_yahoo_price(
-        "GC=F"
-    )
+    # ------------------------------
+    # TGJU
+    # ------------------------------
 
-    silver_oz = get_yahoo_price(
-        "SI=F"
-    )
+    tgju = get_tgju_prices()
+
+    usd_toman = tgju[
+        "usd_toman"
+    ]
+
+    gold_18g = tgju[
+        "gold_18g"
+    ]
+
+    gold_24g = tgju[
+        "gold_24g"
+    ]
+
+    silver_g = tgju[
+        "silver_g"
+    ]
+
+    # ------------------------------
+    # جهانی
+    # ------------------------------
 
     wti = get_yahoo_price(
         "CL=F"
@@ -352,39 +388,13 @@ def do_market_update():
         "BZ=F"
     )
 
-    # دلار آزاد
-    usd_toman = get_usd_toman()
-
-    # یک اونس تروا
-    TROY_OUNCE = 31.1034768
-
-    # گرم طلای 24 عیار
-    gold_24g = (
-        gold_oz
-        * usd_toman
-        / TROY_OUNCE
-    )
-
-    # گرم طلای 18 عیار
-    gold_18g = (
-        gold_24g
-        * 0.75
-    )
-
-    # گرم نقره
-    silver_g = (
-        silver_oz
-        * usd_toman
-        / TROY_OUNCE
-    )
-
     prices = {
-
-        "gold_24g":
-            gold_24g,
 
         "gold_18g":
             gold_18g,
+
+        "gold_24g":
+            gold_24g,
 
         "silver_g":
             silver_g,
@@ -392,22 +402,16 @@ def do_market_update():
         "usd_toman":
             usd_toman,
 
-        "gold_oz":
-            gold_oz,
-
-        "silver_oz":
-            silver_oz,
-
         "wti":
             wti,
 
         "brent":
-            brent,
+            brent
     }
 
-    # =========================
-    # Calculate changes
-    # =========================
+    # ------------------------------
+    # Changes
+    # ------------------------------
 
     changes = {}
 
@@ -438,11 +442,11 @@ def do_market_update():
             price
         )
 
-    # =========================
-    # Telegram message
-    # =========================
+    # ------------------------------
+    # Message
+    # ------------------------------
 
-    def direction(value):
+    def arrow(value):
 
         if value > 0:
             return "▲"
@@ -453,52 +457,53 @@ def do_market_update():
         return "—"
 
     message = (
-        "📊 نوسان بازار\n"
+        "📊 بازار لحظه‌ای\n"
+        "\n"
+
+        f"🥇 طلای ۱۸ عیار\n"
+        f"{gold_18g:,.0f} تومان "
+        f"{arrow(changes['gold_18g'])} "
+        f"{abs(changes['gold_18g']):.2f}%\n"
         "\n"
 
         f"🥇 طلای ۲۴ عیار\n"
         f"{gold_24g:,.0f} تومان "
-        f"{direction(changes['gold_24g'])} "
+        f"{arrow(changes['gold_24g'])} "
         f"{abs(changes['gold_24g']):.2f}%\n"
         "\n"
 
-        f"🟡 طلای ۱۸ عیار\n"
-        f"{gold_18g:,.0f} تومان "
-        f"{direction(changes['gold_18g'])} "
-        f"{abs(changes['gold_18g']):.2f}%\n"
-        "\n"
-
-        f"🥈 نقره / گرم\n"
+        f"🥈 نقره ۹۹۹\n"
         f"{silver_g:,.0f} تومان "
-        f"{direction(changes['silver_g'])} "
+        f"{arrow(changes['silver_g'])} "
         f"{abs(changes['silver_g']):.2f}%\n"
         "\n"
 
         f"💵 دلار آزاد\n"
         f"{usd_toman:,.0f} تومان "
-        f"{direction(changes['usd_toman'])} "
+        f"{arrow(changes['usd_toman'])} "
         f"{abs(changes['usd_toman']):.2f}%\n"
         "\n"
 
-        f"🛢 WTI\n"
+        f"🛢 نفت WTI\n"
         f"${wti:,.2f} "
-        f"{direction(changes['wti'])} "
+        f"{arrow(changes['wti'])} "
         f"{abs(changes['wti']):.2f}%\n"
         "\n"
 
-        f"🛢 Brent\n"
+        f"🛢 نفت Brent\n"
         f"${brent:,.2f} "
-        f"{direction(changes['brent'])} "
+        f"{arrow(changes['brent'])} "
         f"{abs(changes['brent']):.2f}%\n"
         "\n"
 
         f"⏱ {datetime.now().strftime('%H:%M')}"
     )
 
-    # حداقل 0.10 درصد نوسان
+    # ارسال فقط در صورت نوسان 0.10 درصد یا بیشتر
+
     significant = any(
-        abs(change) >= 0.10
-        for change in changes.values()
+        abs(x) >= 0.10
+        for x in changes.values()
     )
 
     if significant:
@@ -510,9 +515,9 @@ def do_market_update():
     return prices, changes
 
 
-# =========================
-# Vercel Handler
-# =========================
+# ==========================================
+# Vercel
+# ==========================================
 
 class handler(
     BaseHTTPRequestHandler
@@ -530,7 +535,7 @@ class handler(
                 {
                     "success": True,
                     "prices": prices,
-                    "changes": changes,
+                    "changes": changes
                 },
                 ensure_ascii=False
             ).encode("utf-8")
@@ -542,7 +547,7 @@ class handler(
             body = json.dumps(
                 {
                     "success": False,
-                    "error": str(e),
+                    "error": str(e)
                 },
                 ensure_ascii=False
             ).encode("utf-8")
@@ -561,6 +566,4 @@ class handler(
 
         self.end_headers()
 
-        self.wfile.write(
-            body
-        )
+        self.wfile.write(body)
