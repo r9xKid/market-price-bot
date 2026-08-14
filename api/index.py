@@ -1,50 +1,43 @@
 from http.server import BaseHTTPRequestHandler
 import json
+import os
+import urllib.parse
 import urllib.request
 
 
-SYMBOLS = {
-    "gold": "GC=F",
-    "silver": "SI=F",
-    "wti": "CL=F",
-    "brent": "BZ=F",
-}
+def send_telegram(message):
+    token = os.environ["TELEGRAM_BOT_TOKEN"]
+    chat_id = os.environ["TELEGRAM_CHANNEL_ID"]
 
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
 
-def get_price(symbol):
-    url = (
-        f"https://query1.finance.yahoo.com/v8/finance/chart/"
-        f"{urllib.parse.quote(symbol)}?range=1d&interval=2m"
-    )
+    data = urllib.parse.urlencode({
+        "chat_id": chat_id,
+        "text": message
+    }).encode()
 
     request = urllib.request.Request(
         url,
-        headers={"User-Agent": "Mozilla/5.0"}
+        data=data,
+        method="POST"
     )
 
     with urllib.request.urlopen(request, timeout=10) as response:
-        data = json.loads(response.read().decode())
-
-    result = data["chart"]["result"][0]
-    meta = result["meta"]
-
-    return meta.get("regularMarketPrice")
+        return json.loads(response.read().decode())
 
 
 class handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         try:
-            import urllib.parse
-
-            prices = {}
-
-            for name, symbol in SYMBOLS.items():
-                prices[name] = get_price(symbol)
+            result = send_telegram(
+                "🤖 تست موفق!\n\n"
+                "ربات Market Price Bot با موفقیت به کانال متصل شد."
+            )
 
             body = json.dumps({
                 "success": True,
-                "prices": prices
+                "telegram": result
             }).encode()
 
             self.send_response(200)
@@ -60,4 +53,5 @@ class handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
+
         self.wfile.write(body)
