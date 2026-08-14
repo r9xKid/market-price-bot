@@ -1,6 +1,7 @@
 from http.server import BaseHTTPRequestHandler
 import json
 import os
+import re
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
@@ -14,7 +15,7 @@ SYMBOLS = {
 }
 
 
-def get_price(symbol):
+def get_yahoo_price(symbol):
     url = (
         "https://query1.finance.yahoo.com/v8/finance/chart/"
         + urllib.parse.quote(symbol)
@@ -26,10 +27,47 @@ def get_price(symbol):
         headers={"User-Agent": "Mozilla/5.0"}
     )
 
-    with urllib.request.urlopen(request, timeout=8) as response:
+    with urllib.request.urlopen(request, timeout=10) as response:
         data = json.loads(response.read().decode())
 
-    return data["chart"]["result"][0]["meta"]["regularMarketPrice"]
+    result = data["chart"]["result"][0]
+    return float(result["meta"]["regularMarketPrice"])
+
+
+def get_usd_toman():
+    urls = [
+        "https://english.tgju.org/profile/price_dollar_rl",
+        "https://www.tgju.org/profile/price_dollar_rl",
+    ]
+
+    for url in urls:
+        try:
+            request = urllib.request.Request(
+                url,
+                headers={
+                    "User-Agent": "Mozilla/5.0"
+                }
+            )
+
+            with urllib.request.urlopen(request, timeout=10) as response:
+                html = response.read().decode("utf-8", errors="ignore")
+
+            # English TGJU:
+            # Last: 1,605,400
+            match = re.search(
+                r"(?:Last|نرخ فعلی)\s*[:：]?\s*([0-9,]+)",
+                html,
+                re.IGNORECASE
+            )
+
+            if match:
+                rial = int(match.group(1).replace(",", ""))
+                return rial / 10
+
+        except Exception:
+            continue
+
+    raise Exception("Unable to get USD/IRR from TGJU")
 
 
 def supabase_request(method, path, data=None):
@@ -53,7 +91,7 @@ def supabase_request(method, path, data=None):
         },
     )
 
-    with urllib.request.urlopen(request, timeout=8) as response:
+    with urllib.request.urlopen(request, timeout=10) as response:
         raw = response.read().decode()
         return json.loads(raw) if raw else []
 
@@ -61,7 +99,10 @@ def supabase_request(method, path, data=None):
 def get_previous(asset):
     rows = supabase_request(
         "GET",
-        f"prices?asset=eq.{asset}&select=price&order=updated_at.desc&limit=1"
+        f"prices?asset=eq.{asset}"
+        f"&select=price"
+        f"&order=updated_at.desc"
+        f"&limit=1"
     )
 
     if not rows:
@@ -99,60 +140,123 @@ def send_telegram(message):
         method="POST",
     )
 
-    with urllib.request.urlopen(request, timeout=8) as response:
+    with urllib.request.urlopen(request, timeout=10) as response:
         return json.loads(response.read().decode())
 
 
 def do_market_update():
-    prices = {}
 
-    for asset, symbol in SYMBOLS.items():
-        prices[asset] = get_price(symbol)
+    # -------------------------
+    # جهانی
+    # -------------------------
+
+    gold_oz = get_yahoo_price("GC=F")
+    silver_oz = get_yahoo_price("SI=F")
+    wti = get_yahoo_price("CL=F")
+    brent = get_yahoo_price("BZ=F")
+
+    # -------------------------
+    # دلار آزاد
+    # -------------------------
+
+    usd_toman = get_usd_toman()
+
+    # یک اونس تروا = 31.1034768 گرم
+    TROY_OUNCE_GRAMS = 31.1034768
+
+    # قیمت یک گرم طلای 24 عیار
+    gold_24g = (
+        gold_oz * usd_toman / TROY_OUNCE_GRAMS
+    )
+
+    # قیمت یک گرم طلای 18 عیار
+    gold_18g = gold_24g * 0.75
+
+    # قیمت یک گرم نقره
+    silver_g = (
+        silver_oz * usd_toman / TROY_OUNCE_GRAMS
+    )
+
+    prices = {
+        "gold_24g": gold_24g,
+        "gold_18g": gold_18g,
+        "silver_g": silver_g,
+        "usd_toman": usd_toman,
+        "gold_oz": gold_oz,
+        "silver_oz": silver_oz,
+        "wti": wti,
+        "brent": brent,
+    }
+
+    # -------------------------
+    # تغییرات
+    # -------------------------
 
     changes = {}
 
     for asset, price in prices.items():
+
         previous = get_previous(asset)
 
         if previous and previous != 0:
             change = ((price - previous) / previous) * 100
-            changes[asset] = change
         else:
-            changes[asset] = 0
+            change = 0
+
+        changes[asset] = change
 
         save_price(asset, price)
+
+    # -------------------------
+    # Telegram message
+    # -------------------------
+
+    names = {
+        "gold_24g": "🥇 طلای ۲۴ عیار / گرم",
+        "gold_18g": "🟡 طلای ۱۸ عیار / گرم",
+        "silver_g": "🥈 نقره / گرم",
+        "usd_toman": "💵 دلار آزاد",
+        "wti": "🛢 نفت WTI",
+        "brent": "🛢 نفت Brent",
+    }
 
     lines = [
         "📊 نوسان بازار",
         "",
+        f"🥇 طلای ۲۴ عیار",
+        f"{gold_24g:,.0f} تومان  "
+        f"{'▲' if changes['gold_24g'] >= 0 else '▼'} "
+        f"{abs(changes['gold_24g']):.2f}%",
+        "",
+        f"🟡 طلای ۱۸ عیار",
+        f"{gold_18g:,.0f} تومان  "
+        f"{'▲' if changes['gold_18g'] >= 0 else '▼'} "
+        f"{abs(changes['gold_18g']):.2f}%",
+        "",
+        f"🥈 نقره / گرم",
+        f"{silver_g:,.0f} تومان  "
+        f"{'▲' if changes['silver_g'] >= 0 else '▼'} "
+        f"{abs(changes['silver_g']):.2f}%",
+        "",
+        f"💵 دلار آزاد",
+        f"{usd_toman:,.0f} تومان  "
+        f"{'▲' if changes['usd_toman'] >= 0 else '▼'} "
+        f"{abs(changes['usd_toman']):.2f}%",
+        "",
+        f"🛢 WTI",
+        f"${wti:,.2f}  "
+        f"{'▲' if changes['wti'] >= 0 else '▼'} "
+        f"{abs(changes['wti']):.2f}%",
+        "",
+        f"🛢 Brent",
+        f"${brent:,.2f}  "
+        f"{'▲' if changes['brent'] >= 0 else '▼'} "
+        f"{abs(changes['brent']):.2f}%",
+        "",
+        "⏱ " + datetime.now().strftime("%H:%M"),
     ]
 
-    names = {
-        "gold": "🥇 طلا",
-        "silver": "🥈 نقره",
-        "wti": "🛢 WTI",
-        "brent": "🛢 Brent",
-    }
-
-    for asset in SYMBOLS:
-        change = changes[asset]
-
-        if change == 0:
-            continue
-
-        arrow = "▲" if change > 0 else "▼"
-
-        lines.append(
-            f"{names[asset]}\n"
-            f"${prices[asset]:,.2f}  {arrow} {abs(change):.2f}%"
-        )
-        lines.append("")
-
-    lines.append(
-        "⏱ " + datetime.now().strftime("%H:%M")
-    )
-
-    # فقط وقتی حداقل یک دارایی 0.10% تغییر کرده باشد پیام می‌فرستیم
+    # اگر هرکدام حداقل 0.10% تغییر کرده باشد
     significant = any(
         abs(change) >= 0.10
         for change in changes.values()
@@ -167,33 +271,43 @@ def do_market_update():
 class handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
+
         try:
             prices, changes = do_market_update()
 
-            body = json.dumps({
-                "success": True,
-                "prices": prices,
-                "changes": changes,
-            }).encode()
+            body = json.dumps(
+                {
+                    "success": True,
+                    "prices": prices,
+                    "changes": changes,
+                },
+                ensure_ascii=False
+            ).encode("utf-8")
 
             self.send_response(200)
 
         except Exception as e:
-            body = json.dumps({
-                "success": False,
-                "error": str(e),
-            }).encode()
+
+            body = json.dumps(
+                {
+                    "success": False,
+                    "error": str(e),
+                },
+                ensure_ascii=False
+            ).encode("utf-8")
 
             self.send_response(500)
 
         self.send_header(
             "Content-Type",
-            "application/json"
+            "application/json; charset=utf-8"
         )
+
         self.send_header(
             "Content-Length",
             str(len(body))
         )
+
         self.end_headers()
 
         self.wfile.write(body)
